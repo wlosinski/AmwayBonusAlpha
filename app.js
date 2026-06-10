@@ -78,7 +78,7 @@ class CalcEngine {
 
   createLeg(name, pv, vcsPv, type) {
     const id = this.legIdCounter++;
-    this.legMap.set(id, { id, name: name || 'Unnamed', pv: pv || 0, vcsPv: vcsPv || 0, type: type || 'standard', children: [] });
+    this.legMap.set(id, { id, name: name || 'Unnamed', pv: pv || 0, vcsPv: vcsPv, type: type || 'standard', children: [] });
     return id;
   }
 
@@ -165,30 +165,32 @@ class CalcEngine {
     return { groupPV, breakawayPV, totalDownlinePV };
   }
 
-  calculateLegEarnings(legId) {
-    const node = this.legMap.get(legId);
-    if (!node) return { monthly: 0, yearly: 0, netBonus: 0, perfBonus: 0, diffBonus: 0, retailMargin: 0, csi: 0 };
-    const ownPV = node.pv;
-    const ownBV = ownPV * this.pvToBv;
+  // ============================================================
+  //  UNIFIED EARNINGS CALCULATION
+  //  Single source of truth for all IBO earnings (personal + downline)
+  // ============================================================
+
+  // Core earnings calculator — works for any IBO (you or any downline leg)
+  // childLegData: [{id, totalPV, totalBV, subLegs}] — pre-computed by tree walker
+  // returns: {monthly, yearly, netBonus, perfBonus, diffBonus, retailMargin, csi, bonuses, qual, ...}
+  _calcEarnings(ownPV, ownVcsPV, iboLevel, pvToBv, childLegData, totalAllDownlineBV) {
+    const ownBV = ownPV * pvToBv;
 
     // Separate children into qualified (25% bracket) and non-qualified
-    const childLegData = [];
-    node.children.forEach(cid => {
-      const cn = this.legMap.get(cid);
-      if (cn) { const ctp = cn.pv + this.sumTreePV(cn.children); childLegData.push({ id: cn.id, totalPV: ctp, totalBV: ctp * this.pvToBv }); }
-    });
     const qual25Legs = childLegData.filter(l => getBracket(l.totalPV).pct >= 0.25);
     const non25Legs = childLegData.filter(l => getBracket(l.totalPV).pct < 0.25);
 
     // Group PV excludes qualified leg volume (they are pass-through / side volume)
     const groupPV = ownPV + non25Legs.reduce((s, l) => s + l.totalPV, 0);
-    const groupBV = groupPV * this.pvToBv;
+    const groupBV = groupPV * pvToBv;
     const bracket = getBracket(groupPV);
     const groupPct = bracket.pct;
 
-    const vcsPV = node.vcsPv || ownPV;
-    const vcsBV = vcsPV * this.pvToBv;
-    const vcsPct = ownPV > 0 ? vcsPV / ownPV : 1;
+    // VCS: use explicit vcsPV if set (>0), otherwise default to ownPV (100% customer)
+    // This matches the personal IBO behavior where VCS defaults to personal PV
+    const vcsPV = (ownVcsPV && ownVcsPV > 0) ? ownVcsPV : ownPV;
+    const vcsBV = vcsPV * pvToBv;
+    const vcsPct = ownPV > 0 ? vcsPV / ownPV : 0;
     const customerPct = vcsPct;
     const rule412Met = customerPct >= 0.70 && vcsPct >= 0.60;
     const r412Factor = rule412Met ? 1.0 : (customerPct > 0 ? Math.min(1.0, customerPct / 0.70) : 0);
@@ -203,10 +205,10 @@ class CalcEngine {
 
     const bfLegs100 = childLegData.filter(l => l.totalPV >= 100).length;
     const bfBase = perfBonus + diffBonus;
-    const bfEligible = groupPV >= 600 && bfLegs100 >= 3 && vcsPct >= 0.60;
+    const bfEligible = groupPV >= 600 && bfLegs100 >= 3 && iboLevel === 'full' && vcsPct >= 0.60;
     const bronzeFoundation = bfEligible ? bfBase * BRONZE_FOUNDATION_PCT : 0;
     const bbLegs300 = childLegData.filter(l => l.totalPV >= 300).length;
-    const bbEligible = groupPV >= 2500 && bbLegs300 >= 3 && vcsPct >= 0.60;
+    const bbEligible = groupPV >= 2500 && bbLegs300 >= 3 && (iboLevel === 'full' || iboLevel === 'bronzeOnly') && vcsPct >= 0.60;
     const bronzeBuilder = bbEligible ? bfBase * BRONZE_BUILDER_PCT : 0;
 
     // Ruby uses non-qualified volume (same as groupPV)
@@ -221,115 +223,167 @@ class CalcEngine {
     if (qual25Legs.length >= 2) {
       qual25Legs.forEach(l => { leadershipBonus += l.totalBV * LEADERSHIP_BONUS_PCT; });
     } else if (qual25Legs.length === 1) {
-      // outsidePV = groupPV (already excludes qualified leg volume)
       if (groupPV >= 2500) leadershipBonus += qual25Legs[0].totalBV * LEADERSHIP_BONUS_PCT;
     }
 
     let depthBonus = 0;
     if (qual25Legs.length >= 3) {
       qual25Legs.forEach(ql => {
-        const qlNode = this.legMap.get(ql.id);
-        if (qlNode) { qlNode.children.forEach(subId => { const sn = this.legMap.get(subId); if (sn) { const stp = sn.pv + this.sumTreePV(sn.children); if (getBracket(stp).pct >= 0.25) depthBonus += stp * this.pvToBv * DEPTH_BONUS_PCT; } }); }
+        if (ql.subLegs) { ql.subLegs.forEach(sl => { if (getBracket(sl.totalPV).pct >= 0.25) depthBonus += sl.totalBV * DEPTH_BONUS_PCT; }); }
       });
     }
 
+    // Yearly bonuses: SS requires 150+ own PV to qualify
     let yearlyBonus = 0;
+    if (iboLevel === 'full' && ownPV >= 150) yearlyBonus += 1000;
     const legs7500 = childLegData.filter(l => l.totalPV >= 7500).length;
     if (legs7500 >= 2) yearlyBonus += 10000;
     if (legs7500 >= 3) yearlyBonus += 7500;
     if (legs7500 >= 6) yearlyBonus += 15000;
-    // Profit sharing uses ALL downline BV (including qualified legs), ×12 for yearly
-    if (legs7500 >= 3) yearlyBonus += this.sumTreeBV(node.children) * PROFIT_SHARING_PCT * 12;
-    if (legs7500 >= 6) yearlyBonus += this.sumTreeBV(node.children) * PROFIT_SHARING_PCT * 12;
+    if (legs7500 >= 3) yearlyBonus += (totalAllDownlineBV || 0) * PROFIT_SHARING_PCT * 12;
+    if (legs7500 >= 6) yearlyBonus += (totalAllDownlineBV || 0) * PROFIT_SHARING_PCT * 12;
 
     const netBonus = perfBonus + diffBonus + bronzeFoundation + bronzeBuilder + perfPlus + perfElite + rubyBonus + leadershipBonus + depthBonus;
     const monthlyEarnings = netBonus + retailMargin + csi + (yearlyBonus / 12);
-    return { monthly: monthlyEarnings, yearly: yearlyBonus, netBonus, perfBonus, diffBonus, retailMargin, csi };
-  }
 
-  calcPersonal() {
-    const personalPV = this.personalPV;
-    const personalVcsPV = this.personalVcsPV;
-    const personalBV = personalPV * this.pvToBv;
-    const personalVcsBV = personalVcsPV * this.pvToBv;
-    const legDataList = [];
-    this.topLevelLegs.forEach(id => { const d = this.collectLegData(id); if (d) legDataList.push(d); });
-    const qual25Legs = legDataList.filter(l => getBracket(l.totalPV).pct >= 0.25);
-    const non25Legs = legDataList.filter(l => getBracket(l.totalPV).pct < 0.25);
-    const nonQualDownlinePV = non25Legs.reduce((s, l) => s + l.totalPV, 0);
-    const totalGroupPV = personalPV + nonQualDownlinePV;
-    const totalGroupBV = totalGroupPV * this.pvToBv;
-    const groupBracket = getBracket(totalGroupPV);
-    const groupPct = groupBracket.pct;
-    const totalAllDownlinePV = legDataList.reduce((s, l) => s + l.totalPV, 0);
-    const totalAllDownlineBV = totalAllDownlinePV * this.pvToBv;
-    const rubyPV = totalGroupPV;
-    const rubyBV = totalGroupBV;
-    const customerPct = personalPV > 0 ? personalVcsPV / personalPV : 1;
-    const vcsPct = customerPct;
-    const rule412Met = customerPct >= 0.70 && vcsPct >= 0.60;
-    const r412Factor = rule412Met ? 1.0 : (customerPct > 0 ? Math.min(1.0, customerPct / 0.70) : 0);
-
-    const bonuses = {
-      retailMargin: personalBV * RETAIL_MARGIN_PCT,
-      csi: groupPct < 0.10 ? personalVcsBV * Math.max(0, CSI_PCT - groupPct) : 0,
-      personalPerfBonus: personalBV * groupPct * r412Factor,
-      differentialBonus: 0, bronzeFoundation: 0, bronzeBuilder: 0,
-      perfPlus: 0, perfElite: 0, rubyBonus: 0, leadershipBonus: 0, depthBonus: 0,
-    };
-
-    legDataList.forEach(leg => { const lb = getBracket(leg.totalPV); const d = groupPct - lb.pct; if (d > 0) bonuses.differentialBonus += leg.totalBV * d; });
-
-    const bfBase = bonuses.personalPerfBonus + bonuses.differentialBonus;
-    const bfLegs100 = legDataList.filter(l => l.totalPV >= 100).length;
-    if (totalGroupPV >= 600 && bfLegs100 >= 3 && this.iboLevel === 'full' && vcsPct >= 0.60) bonuses.bronzeFoundation = bfBase * BRONZE_FOUNDATION_PCT;
-    const bbLegs300 = legDataList.filter(l => l.totalPV >= 300).length;
-    if (totalGroupPV >= 2500 && bbLegs300 >= 3 && (this.iboLevel === 'full' || this.iboLevel === 'bronzeOnly') && vcsPct >= 0.60) bonuses.bronzeBuilder = bfBase * BRONZE_BUILDER_PCT;
-
-    if (rubyPV >= 12500) { bonuses.perfElite = rubyBV * PERF_ELITE_PCT; } else if (rubyPV >= 10000) { bonuses.perfPlus = rubyBV * PERF_PLUS_PCT; }
-    if (rubyPV >= 15000) { bonuses.rubyBonus = rubyBV * RUBY_BONUS_PCT; }
-
-    if (qual25Legs.length >= 2) { qual25Legs.forEach(l => { bonuses.leadershipBonus += l.totalBV * LEADERSHIP_BONUS_PCT; }); }
-    else if (qual25Legs.length === 1) {
-      if (totalGroupPV >= 2500) bonuses.leadershipBonus += qual25Legs[0].totalBV * LEADERSHIP_BONUS_PCT;
-    }
-
-    if (qual25Legs.length >= 3) {
-      qual25Legs.forEach(leg => {
-        const subQual = leg.subLegs.filter(sl => getBracket(sl.totalPV).pct >= 0.25);
-        subQual.forEach(sl => { bonuses.depthBonus += sl.totalBV * DEPTH_BONUS_PCT; });
-      });
-    }
-
-    let yearlyBonus = 0;
-    if (this.iboLevel === 'full') yearlyBonus += 1000;
-    const legs7500 = legDataList.filter(l => l.totalPV >= 7500).length;
-    if (legs7500 >= 2) yearlyBonus += 10000;
-    if (legs7500 >= 3) yearlyBonus += 7500;
-    if (legs7500 >= 6) yearlyBonus += 15000;
-    if (legs7500 >= 3) yearlyBonus += totalAllDownlineBV * PROFIT_SHARING_PCT * 12;
-    if (legs7500 >= 6) yearlyBonus += totalAllDownlineBV * PROFIT_SHARING_PCT * 12;
-
-    const netBonus = bonuses.personalPerfBonus + bonuses.differentialBonus + bonuses.bronzeFoundation + bonuses.bronzeBuilder + bonuses.perfPlus + bonuses.perfElite + bonuses.rubyBonus + bonuses.leadershipBonus + bonuses.depthBonus;
-    const totalEarnings = netBonus + bonuses.retailMargin + bonuses.csi + (yearlyBonus / 12);
-
-    const isSilver = totalGroupPV >= 7500 || legDataList.some(l => { const outside = totalGroupPV - l.totalPV; return getBracket(l.totalPV).pct >= 0.25 && outside >= 2500; }) || legDataList.filter(l => getBracket(l.totalPV).pct >= 0.25).length >= 2;
+    // Qualification flags
+    const isSilver = groupPV >= 7500 || childLegData.some(l => { const outside = groupPV - l.totalPV; return getBracket(l.totalPV).pct >= 0.25 && outside >= 2500; }) || childLegData.filter(l => getBracket(l.totalPV).pct >= 0.25).length >= 2;
     const isEmerald = isSilver && qual25Legs.length >= 3;
     const isDiamond = qual25Legs.length >= 6;
-    const pqMonth = rubyPV >= 7500 || legDataList.some(l => { const outside = rubyPV - l.totalPV; return getBracket(l.totalPV).pct >= 0.25 && outside >= 4000; });
+    const pqMonth = rubyPV >= 7500 || childLegData.some(l => { const outside = rubyPV - l.totalPV; return getBracket(l.totalPV).pct >= 0.25 && outside >= 4000; });
     const fqCount = qual25Legs.length;
-    const bfLegs100q = legDataList.filter(l => l.totalPV >= 100).length;
-    const bfEligible = totalGroupPV >= 600 && bfLegs100q >= 3 && this.iboLevel === 'full' && vcsPct >= 0.60;
-    const bbLegs300q = legDataList.filter(l => l.totalPV >= 300).length;
-    const bbEligible = totalGroupPV >= 2500 && bbLegs300q >= 3 && (this.iboLevel === 'full' || this.iboLevel === 'bronzeOnly') && vcsPct >= 0.60;
-    const ssiEligible = this.iboLevel === 'full';
-    const lbEligible = qual25Legs.length >= 2 || (qual25Legs.length === 1 && totalGroupPV >= 2500);
+    const ssiEligible = iboLevel === 'full' && ownPV >= 150;
+    const lbEligible = qual25Legs.length >= 2 || (qual25Legs.length === 1 && groupPV >= 2500);
     let dbEligible = false;
-    if (qual25Legs.length >= 3) { dbEligible = qual25Legs.some(leg => leg.subLegs.some(sl => getBracket(sl.totalPV).pct >= 0.25)); }
+    if (qual25Legs.length >= 3) { dbEligible = qual25Legs.some(leg => leg.subLegs && leg.subLegs.some(sl => getBracket(sl.totalPV).pct >= 0.25)); }
 
-    const qual = { isSilver, isEmerald, isDiamond, pqMonth, fqCount, qual25LegsCount: qual25Legs.length, rubyPV, bfEligible, bbEligible, ssiEligible, lbEligible, dbEligible, bfLegs100: bfLegs100q, bbLegs300: bbLegs300q, legs7500, bracket: groupBracket.pct, totalGroupPV };
+    const qual = { isSilver, isEmerald, isDiamond, pqMonth, fqCount, qual25LegsCount: qual25Legs.length, rubyPV, bfEligible, bbEligible, ssiEligible, lbEligible, dbEligible, bfLegs100: bfLegs100, bbLegs300: bbLegs300, legs7500, bracket: bracket.pct, totalGroupPV: groupPV };
 
-    return { personalPV, personalVcsPV, personalBV, totalGroupPV, totalGroupBV, groupBracket, groupPct, bonuses, netBonus, totalEarnings, qual, rule412Met, customerPct, vcsPct, iboLevel: this.iboLevel, yearlyBonus, legDataList, totalAllDownlineBV };
+    const bonuses = {
+      retailMargin, csi, personalPerfBonus: perfBonus, differentialBonus: diffBonus,
+      bronzeFoundation, bronzeBuilder, perfPlus, perfElite, rubyBonus, leadershipBonus, depthBonus,
+    };
+
+    return { monthly: monthlyEarnings, yearly: yearlyBonus, netBonus, perfBonus, diffBonus, retailMargin, csi, bonuses, qual, rule412Met, customerPct, vcsPct, groupPV, groupBV, groupPct, groupBracket: bracket };
+  }
+
+  // Tree walker: computes earnings for every node bottom-up
+  // Stores results on each node._earnings
+  // Returns the personal (top-level) result
+  _computeAllEarnings() {
+    this._earningsMap = new Map();
+
+    // Recursive function: computes earnings for a single node, walking children first
+    const computeNode = (nodeId, depth) => {
+      const node = this.legMap.get(nodeId);
+      if (!node) return null;
+
+      // First, recursively compute all children (bottom-up)
+      const childLegData = [];
+      let totalAllDownlineBV = 0;
+      node.children.forEach(cid => {
+        const childResult = computeNode(cid, depth + 1);
+        if (childResult) {
+          childLegData.push(childResult);
+          totalAllDownlineBV += childResult.totalBV;
+        }
+      });
+
+      // Determine VCS: use node.vcsPv if explicitly set (>0), otherwise default to ownPV
+      const ownVcsPV = (node.vcsPv && node.vcsPv > 0) ? node.vcsPv : node.pv;
+
+      const result = this._calcEarnings(
+        node.pv, ownVcsPV, this.iboLevel, this.pvToBv, childLegData, totalAllDownlineBV
+      );
+
+      // Store on node and in map
+      node._earnings = result;
+      node._childLegData = childLegData;
+      node._totalAllDownlineBV = totalAllDownlineBV;
+      this._earningsMap.set(nodeId, result);
+
+      // Return data needed by parent
+      const totalPV = node.pv + childLegData.reduce((s, c) => s + c.totalPV, 0);
+      return { id: nodeId, totalPV, totalBV: totalPV * this.pvToBv, subLegs: childLegData };
+    };
+
+    // Compute all top-level legs
+    const topLevelData = [];
+    let totalAllDownlineBV = 0;
+    this.topLevelLegs.forEach(id => {
+      const d = computeNode(id, 0);
+      if (d) { topLevelData.push(d); totalAllDownlineBV += d.totalBV; }
+    });
+
+    // Now compute personal earnings using the same function
+    const personalResult = this._calcEarnings(
+      this.personalPV, this.personalVcsPV, this.iboLevel, this.pvToBv, topLevelData, totalAllDownlineBV
+    );
+
+    // Build legDataList for backward compatibility (used by renderQualificationStatus)
+    const legDataList = [];
+    const collectLegData = (nodeId) => {
+      const node = this.legMap.get(nodeId);
+      if (!node) return null;
+      const subLegs = [];
+      node.children.forEach(cid => { const sub = collectLegData(cid); if (sub) subLegs.push(sub); });
+      const totalPV = node.pv + subLegs.reduce((s, l) => s + l.totalPV, 0);
+      return { id: nodeId, name: node.name, ownPV: node.pv, totalPV, totalBV: totalPV * this.pvToBv, subLegs };
+    };
+    this.topLevelLegs.forEach(id => { const d = collectLegData(id); if (d) legDataList.push(d); });
+
+    return {
+      personalPV: this.personalPV,
+      personalVcsPV: this.personalVcsPV,
+      personalBV: this.personalPV * this.pvToBv,
+      totalGroupPV: personalResult.groupPV,
+      totalGroupBV: personalResult.groupBV,
+      groupBracket: personalResult.groupBracket,
+      groupPct: personalResult.groupPct,
+      bonuses: personalResult.bonuses,
+      netBonus: personalResult.netBonus,
+      totalEarnings: personalResult.monthly,
+      qual: personalResult.qual,
+      rule412Met: personalResult.rule412Met,
+      customerPct: personalResult.customerPct,
+      vcsPct: personalResult.vcsPct,
+      iboLevel: this.iboLevel,
+      yearlyBonus: personalResult.yearly,
+      legDataList,
+      totalAllDownlineBV,
+    };
+  }
+
+  // Public: compute earnings for a single downline leg (used by row display)
+  // Always recomputes fresh from current tree state
+  calculateLegEarnings(legId) {
+    const node = this.legMap.get(legId);
+    if (!node) return { monthly: 0, yearly: 0, netBonus: 0, perfBonus: 0, diffBonus: 0, retailMargin: 0, csi: 0 };
+
+    // Build childLegData from current tree state (recursive totalPV for each child)
+    const buildChildData = (childId) => {
+      const cn = this.legMap.get(childId);
+      if (!cn) return null;
+      const subLegs = [];
+      cn.children.forEach(cid => { const sub = buildChildData(cid); if (sub) subLegs.push(sub); });
+      const totalPV = cn.pv + subLegs.reduce((s, l) => s + l.totalPV, 0);
+      return { id: childId, totalPV, totalBV: totalPV * this.pvToBv, subLegs };
+    };
+    const childLegData = [];
+    let totalAllDownlineBV = 0;
+    node.children.forEach(cid => {
+      const d = buildChildData(cid);
+      if (d) { childLegData.push(d); totalAllDownlineBV += d.totalBV; }
+    });
+
+    const ownVcsPV = (node.vcsPv && node.vcsPv > 0) ? node.vcsPv : node.pv;
+    const result = this._calcEarnings(node.pv, ownVcsPV, this.iboLevel, this.pvToBv, childLegData, totalAllDownlineBV);
+    return { monthly: result.monthly, yearly: result.yearly, netBonus: result.netBonus, perfBonus: result.perfBonus, diffBonus: result.diffBonus, retailMargin: result.retailMargin, csi: result.csi };
+  }
+
+  // Public: compute personal earnings (used by Performance Summary)
+  calcPersonal() {
+    return this._computeAllEarnings();
   }
 }
 
@@ -506,7 +560,7 @@ function onSettingsChange() {
 
 function refreshLegRowDisplays(legId, engine, container) {
   const node=engine.legMap.get(legId); if(!node) return;
-  const row=container.querySelector(`.leg-row[data-leg-id="${legId}"]`); if(!row) return;
+  const row=document.querySelector(`.leg-row[data-leg-id="${legId}"]`); if(!row) return;
   const vol=engine.calcLegVolume(legId);
   const totalDownlinePV=vol.totalDownlinePV;
   const bv=node.pv*engine.pvToBv;
@@ -521,7 +575,7 @@ function refreshLegRowDisplays(legId, engine, container) {
 
 function refreshAncestorDisplays(legId, engine, container) {
   refreshLegRowDisplays(legId, engine, container);
-  let parent=container.querySelector(`.leg-row[data-leg-id="${legId}"]`)?.parentElement;
+  let parent=document.querySelector(`.leg-row[data-leg-id="${legId}"]`)?.parentElement;
   while(parent){if(parent.classList?.contains('leg-row')){const pId=parseInt(parent.dataset.legId,10);if(!isNaN(pId))refreshLegRowDisplays(pId,engine,container);}parent=parent.parentElement;}
 }
 
@@ -734,8 +788,14 @@ function recalculateFor(engine, dom) {
   renderQualificationStatus(r.qual,r.personalPV,r.totalGroupPV,r.legDataList,r.qual.rubyPV,r.rule412Met,r.customerPct,r.vcsPct,r.iboLevel,dom.qualificationBody);
 
   // Group payout: sum of all downline leg earnings (excludes personal)
+  // Use the pre-computed earnings map from calcPersonal (already called above)
   let legEarningsSum = 0;
-  engine.legMap.forEach((n, id) => { legEarningsSum += engine.calculateLegEarnings(id).monthly; });
+  if (engine._earningsMap) {
+    engine._earningsMap.forEach((result) => { legEarningsSum += result.monthly; });
+  } else {
+    // Fallback: compute individually
+    engine.legMap.forEach((n, id) => { legEarningsSum += engine.calculateLegEarnings(id).monthly; });
+  }
   const groupMonthly = Math.round(legEarningsSum);
   const groupAnnual = groupMonthly * 12;
   if(dom.groupMonthlyPayout) dom.groupMonthlyPayout.textContent = '$' + groupMonthly.toLocaleString('en-US');
