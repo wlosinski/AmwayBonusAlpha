@@ -351,6 +351,8 @@ let $personalPV, $personalVcsPV, $personalBVDisplay,
     $iboLevelSelect,
     $exportBtn, $importBtn, $importFileInput;
 
+let $groupMonthlyPayout, $groupAnnualPayout;
+
 let $growthFrontline, $growthSlow, $growthCustomerPv, $growthMaxPv, $growthMonths, $growthRunBtn, $growthClearBtn, $growthExportBtn;
 let $collapseAllBtn, $expandAllBtn, $projCollapseAllBtn, $projExpandAllBtn;
 
@@ -360,6 +362,8 @@ let $projPanel, $projPersonalPV, $projPersonalVcsPV, $projPersonalBVDisplay,
     $projBracketGrid, $projBonusBreakdownBody, $projGroupEarningsDisplay,
     $projQualificationBody,
     $projIboLevelSelect;
+
+let $projGroupMonthlyPayout, $projGroupAnnualPayout;
 
 function cacheDOM() {
   $personalPV           = document.getElementById('personalPV');
@@ -417,6 +421,11 @@ function cacheDOM() {
   $projGroupEarningsDisplay= document.getElementById('projGroupEarningsDisplay');
   $projQualificationBody= document.getElementById('projQualificationBody');
   $projIboLevelSelect   = document.getElementById('projIboLevelSelect');
+
+  $groupMonthlyPayout   = document.getElementById('groupMonthlyPayout');
+  $groupAnnualPayout    = document.getElementById('groupAnnualPayout');
+  $projGroupMonthlyPayout = document.getElementById('projGroupMonthlyPayout');
+  $projGroupAnnualPayout  = document.getElementById('projGroupAnnualPayout');
 }
 
 // ============================================================
@@ -723,6 +732,14 @@ function recalculateFor(engine, dom) {
   renderBracketGrid(r.totalGroupPV,r.groupBracket,dom.bracketGrid);
   renderBonusBreakdown(r.bonuses,r.netBonus,r.totalEarnings,r.qual,r.rule412Met,r.iboLevel,r.groupPct,r.yearlyBonus,r.totalAllDownlineBV,dom.bonusBreakdownBody);
   renderQualificationStatus(r.qual,r.personalPV,r.totalGroupPV,r.legDataList,r.qual.rubyPV,r.rule412Met,r.customerPct,r.vcsPct,r.iboLevel,dom.qualificationBody);
+
+  // Group payout: sum of all downline leg earnings (excludes personal)
+  let legEarningsSum = 0;
+  engine.legMap.forEach((n, id) => { legEarningsSum += engine.calculateLegEarnings(id).monthly; });
+  const groupMonthly = Math.round(legEarningsSum);
+  const groupAnnual = groupMonthly * 12;
+  if(dom.groupMonthlyPayout) dom.groupMonthlyPayout.textContent = '$' + groupMonthly.toLocaleString('en-US');
+  if(dom.groupAnnualPayout) dom.groupAnnualPayout.textContent = '$' + groupAnnual.toLocaleString('en-US');
 }
 
 function recalculate() {
@@ -731,6 +748,7 @@ function recalculate() {
     totalGroupPV:$totalGroupPV, totalGroupBV:$totalGroupBV, qualifyingPct:$qualifyingPct, bracketBar:$bracketBar,
     bracketGrid:$bracketGrid, bonusBreakdownBody:$bonusBreakdownBody, groupEarningsDisplay:$groupEarningsDisplay,
     qualificationBody:$qualificationBody, iboLevel:$iboLevelSelect,
+    groupMonthlyPayout:$groupMonthlyPayout, groupAnnualPayout:$groupAnnualPayout,
   });
 }
 
@@ -745,6 +763,7 @@ function projRecalculate() {
     totalGroupPV:$projTotalGroupPV, totalGroupBV:$projTotalGroupBV, qualifyingPct:$projQualifyingPct, bracketBar:$projBracketBar,
     bracketGrid:$projBracketGrid, bonusBreakdownBody:$projBonusBreakdownBody, groupEarningsDisplay:$projGroupEarningsDisplay,
     qualificationBody:$projQualificationBody, iboLevel:$projIboLevelSelect,
+    groupMonthlyPayout:$projGroupMonthlyPayout, groupAnnualPayout:$projGroupAnnualPayout,
   });
 }
 

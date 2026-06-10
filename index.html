@@ -204,7 +204,7 @@
     </h2>
 
     <!-- KPI Cards -->
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-6">
       <div class="bg-surface/80 rounded-xl p-4 border border-slate-700/40">
         <p class="text-xs text-muted mb-1">Total Group PV</p>
         <p id="totalGroupPV" class="text-xl sm:text-2xl font-bold">0</p>
@@ -221,7 +221,17 @@
       <div class="bg-gradient-to-r from-brand-900/60 to-brand-800/40 rounded-xl p-4 border border-brand-500/30 glow-pulse">
         <p class="text-xs text-brand-300 uppercase tracking-wider mb-1">Total Monthly Earnings</p>
         <p id="groupEarningsDisplay" class="text-2xl sm:text-3xl font-extrabold text-white">$0.00</p>
-        <p class="text-[10px] text-muted mt-0.5">Net Bonus + Retail Margin + CSI</p>
+        <p class="text-[10px] text-muted mt-0.5">Net Bonus + Retail + CSI</p>
+      </div>
+      <div class="bg-gradient-to-r from-emerald-900/60 to-emerald-800/40 rounded-xl p-4 border border-emerald-500/30">
+        <p class="text-xs text-emerald-300 uppercase tracking-wider mb-1">Monthly Group Payout</p>
+        <p id="groupMonthlyPayout" class="text-2xl sm:text-3xl font-extrabold text-white">$0</p>
+        <p class="text-[10px] text-muted mt-0.5">All downline IBOs</p>
+      </div>
+      <div class="bg-gradient-to-r from-purple-900/60 to-purple-800/40 rounded-xl p-4 border border-purple-500/30">
+        <p class="text-xs text-purple-300 uppercase tracking-wider mb-1">Annual Group Payout</p>
+        <p id="groupAnnualPayout" class="text-2xl sm:text-3xl font-extrabold text-white">$0</p>
+        <p class="text-[10px] text-muted mt-0.5">Monthly × 12</p>
       </div>
     </div>
 
@@ -338,7 +348,7 @@
         <h2 class="text-sm font-semibold uppercase tracking-wider text-amber-400">Projected Performance Summary</h2>
         <span class="text-[10px] bg-amber-600/20 text-amber-300 px-2 py-0.5 rounded-full ml-2">After Growth</span>
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-6">
         <div class="bg-surface/80 rounded-xl p-4 border border-slate-700/40">
           <p class="text-xs text-muted mb-1">Total Group PV</p>
           <p id="projTotalGroupPV" class="text-xl sm:text-2xl font-bold">0</p>
@@ -355,7 +365,17 @@
         <div class="bg-gradient-to-r from-amber-900/60 to-amber-800/40 rounded-xl p-4 border border-amber-500/30 glow-pulse">
           <p class="text-xs text-amber-300 uppercase tracking-wider mb-1">Total Monthly Earnings</p>
           <p id="projGroupEarningsDisplay" class="text-2xl sm:text-3xl font-extrabold text-white">$0.00</p>
-          <p class="text-[10px] text-muted mt-0.5">Net Bonus + Retail Margin + CSI</p>
+          <p class="text-[10px] text-muted mt-0.5">Net Bonus + Retail + CSI</p>
+        </div>
+        <div class="bg-gradient-to-r from-emerald-900/60 to-emerald-800/40 rounded-xl p-4 border border-emerald-500/30">
+          <p class="text-xs text-emerald-300 uppercase tracking-wider mb-1">Monthly Group Payout</p>
+          <p id="projGroupMonthlyPayout" class="text-2xl sm:text-3xl font-extrabold text-white">$0</p>
+          <p class="text-[10px] text-muted mt-0.5">All downline IBOs</p>
+        </div>
+        <div class="bg-gradient-to-r from-purple-900/60 to-purple-800/40 rounded-xl p-4 border border-purple-500/30">
+          <p class="text-xs text-purple-300 uppercase tracking-wider mb-1">Annual Group Payout</p>
+          <p id="projGroupAnnualPayout" class="text-2xl sm:text-3xl font-extrabold text-white">$0</p>
+          <p class="text-[10px] text-muted mt-0.5">Monthly × 12</p>
         </div>
       </div>
       <div class="mb-6">
